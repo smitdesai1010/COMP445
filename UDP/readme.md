@@ -1,11 +1,6 @@
 # How to run
 Note: use `python3` command instead of `python` if on Mac.
 
-Todo: Increase Packet Size?
-Todo: Test for multiple clients
-
-Assumption: 
-    - Selective repeat is implemented for only one packet of 1024 byte will be sent
 
 1. Run the Router: 
     - Relibale: `cd Router && router_x64.exe --port=3000 --drop-rate=0.0 --max-delay=0ms --seed=1`

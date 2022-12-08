@@ -2,6 +2,7 @@ import socket
 import threading
 import ipaddress
 import queue
+import time
 from http.client import responses
 from FileHandler import FileHandler
 from packet import Packet
