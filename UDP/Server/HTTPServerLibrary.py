@@ -218,9 +218,13 @@ class UDPRequest(threading.Thread):
                 packetType = PacketType(packet.packet_type)
                 
                 # Packet received, either the Packet is
+                # SYN: This packet is a duplicate one due to delays, ignore it
                 # ACK: Response reached client => return
                 # Data: The request-received-ACK didn't reach the client, so send ACK again
-        
+
+                if packetType == PacketType.SYN:
+                    continue
+
                 if packetType == PacketType.ACK:
                     if packet.seq_num == 0:
                         print("Received ACK for the 3 way handshake")
@@ -242,7 +246,7 @@ class UDPRequest(threading.Thread):
                     self.connection_socket.sendto(packet.to_bytes(), (self.router_addr, self.router_port))
                     print("ACK sent for Request again")
 
-                    
+              
             except queue.Empty:
                 print("ACK timeout. Resending Response Data...")
                 self.__sendResponse(requestData)

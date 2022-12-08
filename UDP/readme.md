@@ -1,19 +1,17 @@
 # How to run
 Note: use `python3` command instead of `python` if on Mac.
-Note: Start the server again after each client request to do the handshake again
 
 Todo: Increase Packet Size?
 Todo: Test for multiple clients
 
 Assumption: 
     - Selective repeat is implemented for only one packet of 1024 byte will be sent
-    - Client will close after sending the last ACK, If that ACK is dropped, then the server will keep sending packets while the client is closed
 
 1. Run the Router: 
     - Relibale: `cd Router && router_x64.exe --port=3000 --drop-rate=0.0 --max-delay=0ms --seed=1`
     - Delay: `cd Router && router_x64.exe --port=3000 --drop-rate=0.0 --max-delay=4000ms --seed=1`
     - Drop Rate: `cd Router && router_x64.exe --port=3000 --drop-rate=0.5 --max-delay=0ms --seed=1`
-    - Both: `cd Router && router_x64.exe --port=3000 --drop-rate=0.5 --max-delay=2000ms --seed=1`
+    - Both: `cd Router && router_x64.exe --port=3000 --drop-rate=0.5 --max-delay=4000ms --seed=1`
     - Note: We are using a delay of 5s as server and client times out at 3s
 
 2. Run the server: `cd Server && python httpfs.py -p 8080 -v`

@@ -69,6 +69,10 @@ class HTTPClientLibrary:
                     else:
                         print(responseBody)
 
+
+                # To handle duplicate responses
+                self.__handleDuplicateResponse(client_socket, HOST, PORT)
+
     '''
         Internal Method
         Description: Prepares the HTTP request data to sent from the socket
@@ -184,16 +188,22 @@ class HTTPClientLibrary:
                 byteData, sender = connection_socket.recvfrom(1024)
                 packet = Packet.from_bytes(byteData)
                 packetType = PacketType(packet.packet_type)
-                connection_socket.settimeout(None)
+                
                 
                 # Packet received, either the Packet is
+                # SYN-ACK: This packet is a duplicate one due to delays, ignore it
                 # ACK: So request reaached server, turn off timeout and wait for response
                 # Data: This means the request reached server, so no need to wait for ACK
-        
+
+                if packetType == PacketType.SYN_ACK:
+                    continue
+
                 if packetType == PacketType.ACK:
+                    connection_socket.settimeout(None)
                     print("ACK for Request Data received\n")
 
                 if packetType == PacketType.DATA:
+                    connection_socket.settimeout(None)
                     print("Response Data received\n")
 
                     # Send back ACK that data has been received
@@ -220,3 +230,32 @@ class HTTPClientLibrary:
             except socket.timeout:
                 print("ACK timeout. Resending Request Data...")
                 return self.__sendRequestData(connection_socket, requestData, server_addr, server_port)
+
+
+
+    '''
+        Internal Method:
+            This method is invoked once the response is received.
+            The purpose of this method is to handle duplicate responses cause of the following scenario:
+                Client receives an response, sends ACK and exits
+                This ACK is dropped
+                The server timeouts and resends the response again
+                So, need to handle this duplicate response
+    '''
+    def __handleDuplicateResponse(self, connection_socket,  server_addr, server_port):
+        while True:
+            byteData, sender = connection_socket.recvfrom(1024)
+            packet = Packet.from_bytes(byteData)
+            # connection_socket.settimeout(None)
+
+            print("Received duplicate response data, sending ACK again")
+
+            # Send back ACK that data has been received
+            ACKpacket = Packet(packet_type = PacketType.ACK.value,
+                                seq_num = 1,
+                                peer_ip_addr = ipaddress.ip_address(socket.gethostbyname(server_addr)),
+                                peer_port = server_port,
+                                payload = "")
+
+            connection_socket.sendto(ACKpacket.to_bytes(), (self.router_addr, self.router_port))
+            print("ACK for Resposne Data sent again")
