@@ -1,7 +1,7 @@
 import socket
 import threading
 import ipaddress
-from queue import Queue
+import queue
 from http.client import responses
 from FileHandler import FileHandler
 from packet import Packet
@@ -27,7 +27,7 @@ class HTTPServerLibrary:
             server_socket.bind(('localhost', PORT))
             
             while True:
-                # Note: sender will always be the router, so it is useless 
+                # Note: sender will always be the router, so it is useless
                 data, sender = server_socket.recvfrom(1024)
                 
                 packet = Packet.from_bytes(data)
@@ -41,28 +41,29 @@ class HTTPServerLibrary:
 
                 # Push data for this new connection
                 self.threadMap[sourceAddress].queue.put(packet)
+                
+            
 
 
 class UDPRequest(threading.Thread):
     def __init__(self, directory, connection_socket, clientIPAddress, clientPort, verbose):
         threading.Thread.__init__(self)
 
-        self.queue = Queue()
+        self.queue = queue.Queue()
         self.fileHandler = FileHandler()
         self.curr_seq_num = 0
         self.router_addr = 'localhost'
         self.router_port = 3000
+        self.queueTimeout = 2.0  # In seconds
 
         self.verbose = verbose
         self.connection_socket = connection_socket
         self.clientIPAddress = clientIPAddress
         self.clientPort = clientPort
 
-        self.requestPayload = ''
         self.fileHandler.setDefaultDirectory(directory)
 
     def run(self):
-        MAX_PAYLOAD_SIZE = 1013
 
         while True:
             packet = self.queue.get()
@@ -71,23 +72,32 @@ class UDPRequest(threading.Thread):
             if packetType == PacketType.SYN:
                 self.__handleHandshake()
 
-            elif packetType == PacketType.DATA:
-                self.requestPayload += packet.payload.decode("utf-8")
+            if packetType == PacketType.DATA:
+                print("\nRequest Data received")
+                request = packet.payload.decode("utf-8")
 
-                # last packet
-                if len(self.requestPayload) < MAX_PAYLOAD_SIZE:
-                    break
+                # Send back ACK that data has been received
+                packet = Packet(packet_type = PacketType.ACK.value,
+                                seq_num = 1,
+                                peer_ip_addr = ipaddress.ip_address(socket.gethostbyname(self.clientIPAddress)),
+                                peer_port = self.clientPort,
+                                payload = "")
+
+                self.connection_socket.sendto(packet.to_bytes(), (self.router_addr, self.router_port))
+                print("ACK sent for request Data\n")
 
 
-        '''If requestBody does not exists'''
-        if self.requestPayload.count('\r\n\r\n') < 1:
-            responseHeader, responseBody = self.requestPayload, ""
-        
-        else:
-            responseHeader, responseBody = self.requestPayload.split('\r\n\r\n', 1)
-        
+                '''If requestBody does not exists'''
+                if request.count('\r\n\r\n') < 1:
+                    responseHeader, responseBody = request, ""
+                
+                else:
+                    responseHeader, responseBody = request.split('\r\n\r\n', 1)
+                
 
-        self.__handleRequest(responseHeader, responseBody)
+                responseData = self.__handleRequest(responseHeader, responseBody)
+                self.__sendResponse(responseData)
+                return
 
 
 
@@ -122,7 +132,7 @@ class UDPRequest(threading.Thread):
             print('Response Data: ', response)
             print('\n')
         
-        self.__convertToPacketsAndSend(response, PacketType.DATA)
+        return response
 
 
     '''
@@ -190,20 +200,51 @@ class UDPRequest(threading.Thread):
             The first 11 bytes of the datagram are UDP headers
             The remaining 1013 bytes is for the application level payload
     '''
-    def __convertToPacketsAndSend(self, requestData, packet_type):
+    def __sendResponse(self, requestData):
+        print("Sending Response Data")
+            
+        packet = Packet(packet_type = PacketType.DATA.value,
+                        seq_num = 1,
+                        peer_ip_addr = ipaddress.ip_address(socket.gethostbyname(self.clientIPAddress)),
+                        peer_port = self.clientPort,
+                        payload = requestData)
+
+        self.connection_socket.sendto(packet.to_bytes(), (self.router_addr, self.router_port))
+
+        # wait for ACK and responseData
+        while True: 
+            try:  
+                packet = self.queue.get(True, self.queueTimeout)
+                packetType = PacketType(packet.packet_type)
+                
+                # Packet received, either the Packet is
+                # ACK: Response reached client => return
+                # Data: The request-received-ACK didn't reach the client, so send ACK again
         
-        for chunk in self.__chunkstring(requestData, 1013):
-            packet = Packet(packet_type = packet_type.value,
-                            seq_num = self.curr_seq_num,
-                            peer_ip_addr = ipaddress.ip_address(socket.gethostbyname(self.clientIPAddress)),
-                            peer_port = self.clientPort,
-                            payload = chunk)
+                if packetType == PacketType.ACK:
+                    if packet.seq_num == 0:
+                        print("Received ACK for the 3 way handshake")
+                        print("Handshake completed")
+                    else:
+                        print("ACK for Response Data received\n")
+                        return
 
-            self.connection_socket.sendto(packet.to_bytes(), (self.router_addr, self.router_port))
-            self.curr_seq_num += 1
+                if packetType == PacketType.DATA:
+                    print("Received request data again, send ACK again")
 
-        # Implement Selective Repeat with ACK and timeouts
+                    # Send back ACK
+                    packet = Packet(packet_type = PacketType.ACK.value,
+                                    seq_num = 1,
+                                    peer_ip_addr = ipaddress.ip_address(socket.gethostbyname(self.clientIPAddress)),
+                                    peer_port = self.clientPort,
+                                    payload = "")
 
+                    self.connection_socket.sendto(packet.to_bytes(), (self.router_addr, self.router_port))
+                    print("ACK sent for Request again")
 
-    def __chunkstring(self, string, length):
-        return (string[0+i:length+i] for i in range(0, len(string), length))
+                    
+            except queue.Empty:
+                print("ACK timeout. Resending Response Data...")
+                self.__sendResponse(requestData)
+                return
+

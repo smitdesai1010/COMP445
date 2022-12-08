@@ -10,6 +10,7 @@ class HTTPClientLibrary:
         self.curr_seq_num = 0
         self.router_addr = 'localhost'
         self.router_port = 3000
+        self.connectionTimeout = 2.0  # In seconds
         
     '''
     Description: Send a HTTP request via a TCP socket
@@ -39,10 +40,7 @@ class HTTPClientLibrary:
                 self.__handshake(client_socket, HOST, PORT)
 
                 requestData = self.__prepareRequest(HOST, HTTP_METHOD, PATH, HEADERS, BODY_DATA)    
-                self.__convertToPacketsAndSend(client_socket, requestData, PacketType.DATA, HOST, PORT)
-   
-                # Receive response
-                responseHeader, responseBody = self.__receiveResponse(client_socket)
+                responseHeader, responseBody = self.__sendRequestData(client_socket, requestData, HOST, PORT)
 
                 '''Check if the response is 302: redirect'''
                 if (self.__responseHeaderContainsRedirection(responseHeader)):
@@ -100,39 +98,6 @@ class HTTPClientLibrary:
         return request.encode()
 
 
-    '''
-        Internal Method 
-        Description: Receives the response from the socket
-        Return: responseHeader, responseBody
-
-        Note: Splits the Header and Body using the '\r\n\r\n' delimiter
-    '''
-    def __receiveResponse(self, socket):
-        BUFFER_SIZE = 1024
-        PAYLOAD_SIZE = 1013
-        response = b''
-
-        '''Reads data in packets of length BUFFER_SIZE from the kernel buffer'''
-        while True:
-            byteData, sender = socket.recvfrom(BUFFER_SIZE)
-            packet = Packet.from_bytes(byteData)
-
-            # Implement Selective Repeat with ACK and buffer
-
-            response += packet.payload
-            if len(packet.payload) < PAYLOAD_SIZE: break   # Last packet
-        
-        response = response.decode('utf-8')
-
-        '''If responseBody does not exists'''
-        if response.count('\r\n\r\n') < 1:
-            return response, ""
-        
-        else:
-            responseHeader, responseBody = response.split('\r\n\r\n', 1)
-            return responseHeader, responseBody
-
-
     def __responseHeaderContainsRedirection(self, responseHeaderString):
         HEADERS = responseHeaderString.split('\r\n')
         return '302' in HEADERS[0]
@@ -151,8 +116,6 @@ class HTTPClientLibrary:
 
 
     def __handshake(self, connection_socket, server_addr, server_port):
-        HANDSHAKE_CONNECTION_TIMEOUT = 2.0  # In seconds
-
         print("Initiating handshake....")
 
         # SYN
@@ -168,7 +131,7 @@ class HTTPClientLibrary:
         # SYN-ACK
         try:
             # Set timeout, if not received within timeout, send hanshake again
-            connection_socket.settimeout(HANDSHAKE_CONNECTION_TIMEOUT)
+            connection_socket.settimeout(self.connectionTimeout)
             byteData, sender = connection_socket.recvfrom(1024)
             packet = Packet.from_bytes(byteData)
 
@@ -200,20 +163,60 @@ class HTTPClientLibrary:
             The first 11 bytes of the datagram are UDP headers
             The remaining 1013 bytes is for the application level payload
     '''
-    def __convertToPacketsAndSend(self, connection_socket, requestData, packet_type, server_addr, server_port):
+    def __sendRequestData(self, connection_socket, requestData, server_addr, server_port):
+        print("Sending Request Data")
+
+        packet = Packet(packet_type = PacketType.DATA.value,
+                        seq_num = 1,
+                        peer_ip_addr = ipaddress.ip_address(socket.gethostbyname(server_addr)),
+                        peer_port = server_port,
+                        payload = requestData)
+
         
-        for chunk in self.__chunkstring(requestData, 1013):
-            packet = Packet(packet_type = packet_type.value,
-                            seq_num = self.curr_seq_num,
-                            peer_ip_addr = ipaddress.ip_address(socket.gethostbyname(server_addr)),
-                            peer_port = server_port,
-                            payload = chunk)
+        connection_socket.sendto(packet.to_bytes(), (self.router_addr, self.router_port))
 
-            
-            connection_socket.sendto(packet.to_bytes(), (self.router_addr, self.router_port))
-            self.curr_seq_num += 1
+        # Set timeout, if not received within timeout, send the packet again
+        connection_socket.settimeout(self.connectionTimeout)
 
-        # Implement Selective Repeat with ACK and timeouts
+        # wait for ACK and responseData
+        while True: 
+            try:  
+                byteData, sender = connection_socket.recvfrom(1024)
+                packet = Packet.from_bytes(byteData)
+                packetType = PacketType(packet.packet_type)
+                connection_socket.settimeout(None)
+                
+                # Packet received, either the Packet is
+                # ACK: So request reaached server, turn off timeout and wait for response
+                # Data: This means the request reached server, so no need to wait for ACK
+        
+                if packetType == PacketType.ACK:
+                    print("ACK for Request Data received\n")
 
-    def __chunkstring(self, string, length):
-        return (string[0+i:length+i] for i in range(0, len(string), length))
+                if packetType == PacketType.DATA:
+                    print("Response Data received\n")
+
+                    # Send back ACK that data has been received
+                    ACKpacket = Packet(packet_type = PacketType.ACK.value,
+                                    seq_num = 1,
+                                    peer_ip_addr = ipaddress.ip_address(socket.gethostbyname(server_addr)),
+                                    peer_port = server_port,
+                                    payload = "")
+
+                    connection_socket.sendto(ACKpacket.to_bytes(), (self.router_addr, self.router_port))
+                    print("ACK for Resposne Data sent")
+
+                    print("Parsing HTTP response data\n")
+                    response = packet.payload.decode("utf-8")
+
+                    '''If responseBody does not exists'''
+                    if response.count('\r\n\r\n') < 1:
+                        return response, ""
+                    
+                    else:
+                        responseHeader, responseBody = response.split('\r\n\r\n', 1)
+                        return responseHeader, responseBody
+                    
+            except socket.timeout:
+                print("ACK timeout. Resending Request Data...")
+                return self.__sendRequestData(connection_socket, requestData, server_addr, server_port)
